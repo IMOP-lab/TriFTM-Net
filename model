@@ -1,0 +1,520 @@
+
+
+
+from collections import OrderedDict
+import math
+import torch
+from torchvision import models
+import torch.nn as nn
+from Model.mae1 import mae_vit_base_patch16 
+from Model.convnext import convnext_tiny
+from torch.nn import functional as F
+import torchsummary
+from torch.nn import init
+import numpy as np
+from torch.nn import Module, Sequential, Conv2d, ReLU,AdaptiveMaxPool2d, AdaptiveAvgPool2d, \
+    NLLLoss, BCELoss, CrossEntropyLoss, AvgPool2d, MaxPool2d, Parameter, Linear, Sigmoid, Softmax, Dropout, Embedding
+from torchvision.ops import DeformConv2d
+from torch.autograd import Variable
+up_kwargs = {'mode': 'bilinear', 'align_corners': True}
+torch_ver = torch.__version__[:3]
+import torch
+import pytorch_wavelets as ptw
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+class ConvBlock(nn.Module):
+    def __init__(self,ch_in,ch_out):
+        super(ConvBlock,self).__init__()
+        self.conv = nn.Sequential(
+            nn.Conv2d(ch_in, ch_out, kernel_size=3,stride=1,padding=1,bias=True),
+            nn.BatchNorm2d(ch_out),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(ch_out, ch_out, kernel_size=3,stride=1,padding=1,bias=True),
+            nn.BatchNorm2d(ch_out),
+            nn.ReLU(inplace=True)
+        )
+
+
+    def forward(self,x):
+        x = self.conv(x)
+        return x
+    
+class gap(nn.Module):
+    def __init__(self):
+        super(gap, self).__init__()
+
+    def forward(self, x):
+        x_pool = torch.mean(x.view(x.size(0), x.size(1), x.size(2) * x.size(3)), dim=2)
+
+        x_pool = x_pool.view(x.size(0), x.size(1), 1, 1).contiguous()
+        return x_pool
+
+GlobalAvgPool2D = lambda: nn.AdaptiveAvgPool2d(1)
+
+
+class Up_ConvBlock(nn.Module):
+    def __init__(self,ch_in,ch_out):
+        super(Up_ConvBlock,self).__init__()
+        self.up = nn.Sequential(
+            nn.Upsample(scale_factor=2),
+            nn.Conv2d(ch_in,ch_out,kernel_size=3,stride=1,padding=1,bias=True),
+		    nn.BatchNorm2d(ch_out),
+			nn.ReLU(inplace=True)
+        )
+
+    def forward(self,x):
+        x = self.up(x)
+        return x
+    
+
+class FourierTransforms(nn.Module):
+    def __init__(self, channels, reduction_ratio=16):
+        super(FourierTransforms, self).__init__()
+
+        self.freq_channels = max(channels // reduction_ratio, 1)
+
+        self.high_freq_scale = nn.Parameter(torch.zeros(1, self.freq_channels, 1, 1))
+        self.low_freq_scale = nn.Parameter(torch.zeros(1, self.freq_channels, 1, 1))
+
+        self.to_freq_channels = nn.Conv2d(channels, self.freq_channels, kernel_size=1)
+        self.to_orig_channels = nn.Conv2d(self.freq_channels, channels, kernel_size=1)
+        self.sigmoid = nn.Sigmoid()
+        
+    def forward(self, x):
+
+        fft_x = torch.fft.fft2(x)
+        amplitude = torch.abs(fft_x)
+        phase = torch.angle(fft_x)
+        
+        reduced_amplitude = self.to_freq_channels(amplitude)
+        
+        _, _, h, w = reduced_amplitude.size()
+        high_freq_mask = torch.ones_like(reduced_amplitude)
+        low_freq_mask = torch.ones_like(reduced_amplitude)
+        center = (h // 2, w // 2)
+        
+        high_freq_mask[:, :, :center[0], :center[1]] = 0
+        high_freq_mask[:, :, center[0]:, center[1]:] = 0
+        low_freq_mask = 1 - high_freq_mask
+        
+        high_scaled_amplitude = reduced_amplitude * high_freq_mask * self.sigmoid(self.high_freq_scale)
+        low_scaled_amplitude = reduced_amplitude * low_freq_mask * self.sigmoid(self.low_freq_scale)
+        scaled_amplitude = high_scaled_amplitude + low_scaled_amplitude
+        
+        full_amplitude = self.to_orig_channels(scaled_amplitude)
+        
+        recombined_fft = torch.polar(full_amplitude, phase)
+        ifft_x = torch.fft.ifft2(recombined_fft)
+        
+        return ifft_x.real
+
+
+
+class WaveTransforms(nn.Module):
+
+    class CA(nn.Module):
+        def __init__(self, channels, reduction=2):
+            super().__init__()
+            self.avg_pool = nn.AdaptiveAvgPool2d(1)
+            self.fc = nn.Sequential(
+                nn.Linear(channels, channels // reduction, bias=False),
+                nn.ReLU(inplace=True),
+                nn.Linear(channels // reduction, channels, bias=False),
+                nn.Sigmoid()
+            )
+        
+        def forward(self, x):
+            b, c, _, _ = x.size()
+            y = self.avg_pool(x).view(b, c)
+            y = self.fc(y).view(b, c, 1, 1)
+            return x * y.expand_as(x)
+
+    def __init__(self):
+        super(WaveTransforms, self).__init__()
+        self.attention = self.CA(6) 
+
+    def dwt(self, x):
+        low_freq = x[:, :, 0::2, 0::2]
+        high_freq = x[:, :, 1::2, 1::2]
+        output = torch.cat((low_freq, high_freq), dim=1)
+        output = self.attention(output)
+        return output
+
+    def iwt(self, x):
+        channels = x.size(1) // 2
+        low_freq = x[:, :channels, :, :]
+        high_freq = x[:, channels:, :, :]
+        output = torch.zeros_like(x).resize_(x.size(0), channels, x.size(2)*2, x.size(3)*2).to(x.device)
+        output[:, :, 0::2, 0::2] = low_freq
+        output[:, :, 1::2, 1::2] = high_freq
+        return output
+    def forward(self, x):
+        transformed = self.dwt(x)
+
+        reconstructed = self.iwt(transformed)
+        return reconstructed
+
+
+
+class PSA(nn.Module):
+    def __init__(self):
+        super(PSA, self).__init__()
+        self.localization = nn.Sequential(
+            nn.Conv2d(768, 128, kernel_size=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(True),
+            nn.Conv2d(128, 64, kernel_size=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+            nn.AdaptiveAvgPool2d(1)
+        )
+        self.fc_loc = nn.Sequential(
+            nn.Linear(64, 32),
+            nn.ReLU(True),
+            nn.Linear(32, 2 * 3)
+        )
+        self.fc_loc[2].weight.data.zero_()
+        self.fc_loc[2].bias.data.copy_(torch.tensor([1, 0, 0, 0, 1, 0], dtype=torch.float))
+    
+    def psa(self, x):
+        xs = self.localization(x)
+        xs = xs.view(-1, 64)
+        theta = self.fc_loc(xs)
+        theta = theta.view(-1, 2, 3)
+        grid = F.affine_grid(theta, x.size(), align_corners=False)
+        x = F.grid_sample(x, grid, align_corners=False)
+        return x
+    
+    def forward(self, x):
+        x = self.psa(x)
+        return x
+
+class BPA(nn.Module):
+    def __init__(self, num_channels, reduction_ratio=16):
+        super(BPA, self).__init__()
+        self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
+
+        self.fc_avg = nn.Sequential(
+            nn.Conv2d(num_channels, num_channels // reduction_ratio, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(num_channels // reduction_ratio, num_channels, 1, bias=False)
+        )
+        self.fc_max = nn.Sequential(
+            nn.Conv2d(num_channels, num_channels // reduction_ratio, 1, bias=False),
+            nn.ReLU(),
+            nn.Conv2d(num_channels // reduction_ratio, num_channels, 1, bias=False)
+        )
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        b, c, h, w = x.size()
+        avg_out = self.avg_pool(x)
+        max_out = self.max_pool(x)
+        avg_out = self.fc_avg(avg_out)
+        max_out = self.fc_max(max_out)
+        out = avg_out + max_out
+        scale = self.sigmoid(out)
+        return x * scale.expand_as(x)
+
+
+class ChannelShuffle(nn.Module):
+    def __init__(self, groups):
+        super(ChannelShuffle, self).__init__()
+        self.groups = groups
+
+    def forward(self, x):
+        batch_size, num_channels, height, width = x.size()
+        channels_per_group = num_channels // self.groups
+        
+        x = x.view(batch_size, self.groups, channels_per_group, height, width)
+        
+        x = x.transpose(1, 2).contiguous()
+        
+        x = x.view(batch_size, -1, height, width)
+        return x
+
+class CSCA(nn.Module):
+    def __init__(self, channels, reduction_ratio=16, dilation_rate=2, groups=4):
+        super(CSCA, self).__init__()
+        self.channel_attention = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // reduction_ratio, kernel_size=1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction_ratio, channels, kernel_size=1)
+        )
+        self.channel_shuffle = ChannelShuffle(groups) 
+        self.spatial_attention = nn.Sequential(
+            nn.Conv2d(2, 1, kernel_size=7, padding=3*dilation_rate, dilation=dilation_rate),
+            nn.Sigmoid()
+        )
+    
+    def forward(self, x):
+        ca = self.channel_attention(x)
+        ca = torch.sigmoid(ca) * x
+        ca = self.channel_shuffle(ca)  
+        max_out, _ = torch.max(ca, dim=1, keepdim=True)
+        avg_out = torch.mean(ca, dim=1, keepdim=True)
+        x_combined = torch.cat([max_out, avg_out], dim=1)
+        sa = self.spatial_attention(x_combined)
+        out = sa * ca
+        return out
+
+
+class AFM(nn.Module):
+    def __init__(self, channels, reduction=16, dilation_rate=2):
+        super(AFM, self).__init__()
+        self.channels = channels
+        self.fuse = nn.Conv2d(2 * channels, channels, kernel_size=3, stride=1, padding=dilation_rate, dilation=dilation_rate)
+        self.bn = nn.BatchNorm2d(channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.csca = CSCA(channels * 2, reduction, dilation_rate)
+
+    def forward(self, x_psa, x_bpa):
+        x_psa = F.normalize(x_psa, p=2, dim=1)
+        x_bpa = F.normalize(x_bpa, p=2, dim=1)
+        x = torch.cat([x_psa, x_bpa], dim=1)
+        x_att = self.csca(x)
+        x_fused = self.fuse(x_att)
+        x_fused = self.bn(x_fused)
+        x_fused = self.relu(x_fused)
+        return x_fused
+
+
+
+class TriFTM_Net(nn.Module):
+    def __init__(self,num_class=1):
+        super(TriFTM_Net,self).__init__()
+        
+        out_planes = num_class*8
+        self.backbone1=mae_vit_base_patch16 (pretrained=True)
+        self.backbone2=convnext_tiny (pretrained=True)
+
+        self.ft = FourierTransforms(3)
+        self.wt = WaveTransforms()
+
+        self.psa = PSA()
+        self.bpa = BPA(num_channels=768)
+        self.afm = AFM(channels=768)
+
+        self.gap = GlobalAvgPool2D()
+
+        self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
+        self.relu = nn.ReLU()
+        
+        self.up4 = Up_ConvBlock(ch_in=768,ch_out=384)
+        self.fb4 = FeatureBlock(384,384)
+        self.dcb4 = Detail_ConvBlock(384,384,2)
+        self.convblock4 = ConvBlock(ch_in=768, ch_out=384)
+
+        self.up3 = Up_ConvBlock(ch_in=384,ch_out=192)
+        self.fb3 = FeatureBlock(192,192)
+        self.dcb3 = Detail_ConvBlock(192,192,2)
+        self.convblock3 = ConvBlock(ch_in=384, ch_out=192)
+
+        self.up2 = Up_ConvBlock(ch_in=192,ch_out=96)
+        self.fb2 = FeatureBlock(96,96)
+        self.dcb2 = Detail_ConvBlock(96,96,2)
+        self.convblock2 = ConvBlock(ch_in=192, ch_out=96)
+
+        self.up1 = Up_ConvBlock(ch_in=96,ch_out=48)
+        self.fb1 = FeatureBlock(48,48)
+        self.dcb1 = Detail_ConvBlock(48,48,2)
+        self.convblock1 = ConvBlock(ch_in=96, ch_out=48)
+
+        self.final_decoder=LWdecoder(in_channels=[48,96,192,384],out_channels=48,in_feat_output_strides=(4, 8, 16, 32),
+                                     out_feat_output_stride=4,norm_fn=nn.BatchNorm2d,num_groups_gn=None)
+
+        self.seg_pred_conv_2 = nn.Conv2d(48, out_planes , 1)
+        self.upsample4x_op = nn.UpsamplingBilinear2d(scale_factor=2)
+       
+        self.conv1x1_2 = nn.Conv2d(3, 48, kernel_size=1)
+        self.conv1x1_3 = nn.Conv2d(144, 48, kernel_size=1) 
+
+        self.conv1 = nn.Conv2d(3, 48, kernel_size=7, stride=2, padding=3,
+                                   bias=False)
+        self.bn1 = nn.BatchNorm2d(48)
+        self.relu = nn.ReLU(inplace=True)
+
+# 添加softmax层
+        self.softmax = nn.Softmax(dim=1)  
+
+
+    def forward(self, x):
+
+        ft_out = self.ft(x)
+        ft_out = self.conv1x1_2(ft_out)
+        ft_out = F.interpolate(ft_out, size=(240,240), mode='bilinear', align_corners=False)
+
+        wt_out = self.wt(x)
+        wt_out = self.conv1x1_2(wt_out)
+        wt_out = F.interpolate(wt_out, size=(240,240), mode='bilinear', align_corners=False)
+
+        x = self.backbone1.forward_encoder(x)
+        conv_out = self.conv1(x)
+        conv_out = self.bn1(conv_out)
+        conv_out =self.relu(conv_out)#1/2  32
+
+        combined = torch.cat((conv_out, ft_out, wt_out ), dim=1)
+        c1 = self.conv1x1_3(combined)
+
+        _,out = self.backbone2.forward_features(x)
+
+        c2=out[0]
+        c3=out[1]
+        c4=out[2]
+        c5=out[3]  
+        c5_psa=self.psa(c5)
+        c5_bpa=self.bpa(c5)
+        c5=self.afm(c5_psa,c5_bpa)
+
+        d4 = self.up4(c5)
+        d4 = self.fb4(self.gap(d4),d4)
+        d4 = self.dcb4(d4)
+        d4 = torch.cat((c4,d4),dim=1)
+        d4 = self.convblock4(d4)
+
+        d3 = self.up3(d4)
+        d3 = self.fb3(self.gap(d3),d3)
+        d3 = self.dcb3(d3)
+        d3 = torch.cat((c3,d3),dim=1)
+        d3 = self.convblock3(d3)
+
+        d2 = self.up2(d3)
+        d2 = self.fb2(self.gap(d2),d2)
+        d2 = self.dcb2(d2)
+        d2 = torch.cat((c2,d2),dim=1)
+        d2 = self.convblock2(d2)
+
+        d1 = self.up1(d2)
+        d1 = self.fb1(self.gap(d1),d1)
+        d1 = self.dcb1(d1)
+        d1 = torch.cat((c1,d1),dim=1)
+        d1 = self.convblock1(d1)
+
+        feat_list = [c1,c2,c3,c4,c5]
+        final_feat = self.final_decoder(feat_list)
+
+        seg_pred = self.seg_pred_conv_2(final_feat)
+        seg_pred = self.upsample4x_op(seg_pred)
+   
+        seg_pred = F.interpolate( seg_pred ,size=(480,480),mode='bilinear',align_corners=False) 
+        seg_pred = self.softmax(seg_pred) 
+        return seg_pred
+    
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_uniform_(m.weight.data)
+                if m.bias is not None:
+                    m.bias.data.zero_()
+            elif isinstance(m, nn.BatchNorm2d):
+                init.normal_(m.weight.data, 1.0, 0.02)
+                init.constant_(m.bias.data, 0.0)
+     
+
+class FeatureBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, scale_aware_proj=False):
+        super(FeatureBlock, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.scale_aware_proj = scale_aware_proj
+
+        self.content_encoders = self.create_encoder(in_channels, out_channels)
+        self.feature_reencoders = self.create_encoder(in_channels, out_channels)
+        
+        k = self.calculate_scale_aware_k() if scale_aware_proj else 3
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=k, padding=k//2, bias=False)
+
+        self.scene_encoder = self.create_encoder(in_channels, out_channels)
+        self.normalizer = nn.Sigmoid()
+
+    def create_encoder(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=1),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+
+    def calculate_scale_aware_k(self):
+        return int(abs((np.log2(self.in_channels) + 1) / 2))
+    
+
+    def forward(self, scene_feature, features):
+        content_feats = self.content_encoders(features)
+        scene_feat = self.scene_encoder(scene_feature)
+        scene_feat = self.adjust_dimensions(scene_feat, content_feats.shape)
+
+        relations = self.normalizer((scene_feat * content_feats).sum(dim=1, keepdim=True))
+        p_feats = self.feature_reencoders(features)
+        refined_feats = relations * p_feats
+
+        return refined_feats
+    
+    def adjust_dimensions(self, scene_feat, target_shape):
+        return scene_feat  
+    
+
+class Detail_ConvBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, dilation_rate):
+        super(Detail_ConvBlock, self).__init__()
+        self.conv = nn.Conv2d(in_channels, out_channels, kernel_size=3, 
+                              dilation=dilation_rate, padding=dilation_rate)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, x):
+        x = self.conv(x)
+        x = self.bn(x)
+        x = self.relu(x)
+        return x
+    
+
+
+class LWdecoder(nn.Module):
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 in_feat_output_strides=(4, 8, 16, 32),
+                 out_feat_output_stride=4,
+                 norm_fn=nn.BatchNorm2d,
+                 num_groups_gn=None):
+        super(LWdecoder, self).__init__()
+        if norm_fn == nn.BatchNorm2d:
+            norm_fn_args = dict(num_features=out_channels)
+        elif norm_fn == nn.GroupNorm:
+            if num_groups_gn is None:
+                raise ValueError('When norm_fn is nn.GroupNorm, num_groups_gn is needed.')
+            norm_fn_args = dict(num_groups=num_groups_gn, num_channels=out_channels)
+        else:
+            raise ValueError('Type of {} is not support.'.format(type(norm_fn)))
+        self.blocks = nn.ModuleList()
+        dec_level = 0
+        for in_feat_os in in_feat_output_strides:
+            num_upsample = int(math.log2(int(in_feat_os))) - int(math.log2(int(out_feat_output_stride)))
+
+            num_layers = num_upsample if num_upsample != 0 else 1
+
+            self.blocks.append(nn.Sequential(*[
+                nn.Sequential(
+                    nn.Conv2d(in_channels[dec_level] if idx ==0 else out_channels, out_channels, 3, 1, 1, bias=False),
+                    norm_fn(**norm_fn_args) if norm_fn is not None else nn.Identity(),
+                    nn.ReLU(inplace=True),
+                    nn.UpsamplingBilinear2d(scale_factor=2) if num_upsample != 0 else nn.Identity(),
+                )
+                for idx in range(num_layers)]))
+            dec_level+=1
+
+    def forward(self, feat_list: list):
+        inner_feat_list = []
+        for idx, block in enumerate(self.blocks):
+            decoder_feat = block(feat_list[idx])
+            inner_feat_list.append(decoder_feat)
+
+        out_feat = sum(inner_feat_list) / 4.
+        return out_feat
+
+    
+        
