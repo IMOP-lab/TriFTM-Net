@@ -59,14 +59,14 @@ Experiments were conducted under identical hardware and software environments: f
 ### Compare with others on the OIMHS dataset
 
 <div align=center>
-  <img src="https://github.com/IMOP-lab/SASAN-Pytorch/blob/main/tables/OIMHS_table.png">
+  <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/baselines.png">
 </div>
 <p align=center>
   Figure 6: Comparison experiments between our method and 13 previous segmentation methods on the OIMHS dataset.
 </p>
 
 <div align=center>
-  <img src="https://github.com/IMOP-lab/SASAN-Pytorch/blob/main/figures/OIHMS_segmentation.png">
+  <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/.png">
 </div>
 <p align=center>
   Figure 7: The visual results of our method compared to the existing 13 segmentation methods on the OIMHS dataset.
