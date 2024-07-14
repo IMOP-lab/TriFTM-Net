@@ -24,7 +24,7 @@ We will first introduce our methods and principles, then describe the experiment
   <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/tpshe.png"width=80% height=80%>
 </div>
 <p align=center>
-  Figure 3: Structure of the TPSHE.
+  Figure 2: Structure of the TPSHE.
 </p>
 
 TPSHE, as an innovative encoder integrating spatial, spectral, and time-frequency domains, is capable of capturing both global structural information, such as the choroid and retina, and localized features, including macular edema.
@@ -46,7 +46,7 @@ FRM is integrated between the encoder and decoder to optimize the capture and ut
   <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/hfrm.png"width=80% height=80%>
 </div>
 <p align=center>
-  Figure 3: Structure of the HFRM.
+  Figure 4: Structure of the HFRM.
 </p>
 
 HFRM enables the model to accurately reconstruct the high-level features required for detail enhancement from the sampled features, avoiding the loss of detail information. By utilizing multi-scale convolution operations and integrating features of different levels, it significantly improves the model's performance. The DCB ensures the accuracy of the enhanced features.
@@ -62,14 +62,14 @@ Experiments were conducted under identical hardware and software environments: f
   <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/baselines.png">
 </div>
 <p align=center>
-  Figure 6: Comparison experiments between our method and 13 previous segmentation methods on the OIMHS dataset.
+  Figure 5: Comparison experiments between our method and 13 previous segmentation methods on the OIMHS dataset.
 </p>
 
 <div align=center>
   <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/baseline_figure3.png">
 </div>
 <p align=center>
-  Figure 7: The visual results of our method compared to the existing 13 segmentation methods on the OIMHS dataset.
+  Figure 6: The visual results of our method compared to the existing 13 segmentation methods on the OIMHS dataset.
 </p>
 
 ### Ablation study
@@ -79,7 +79,7 @@ Experiments were conducted under identical hardware and software environments: f
   <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/ablation_module.png">
 </div>
 <p align=center>
-  Figure 9: Ablation experiments on key components of TriFTM-Net on the OIMHS dataset.
+  Figure 7: Ablation experiments on key components of TriFTM-Net on the OIMHS dataset.
 </p>
 
 FDB introduces frequency domain information to suppress image noise. SDB incorporates spatiotemporal domain information to focus on multiple scales of the image. HRM exhibits strong generalization capability in focusing on deep feature maps. HFRM shows good results in restoring image details and feature re-encoding.
@@ -90,7 +90,7 @@ FDB introduces frequency domain information to suppress image noise. SDB incorpo
   <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/ablation_hfrm.png">
 </div>
 <p align=center>
-  Figure 10: Ablation experiments on HFRM on the OIMHS dataset.
+  Figure 8: Ablation experiments on HFRM on the OIMHS dataset.
 </p>
 
 Adding HFRM after each upsampling not only helps to restore image details but also benefits the subsequent segmentation of large-scale information in the image.
