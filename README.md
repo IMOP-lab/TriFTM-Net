@@ -66,47 +66,32 @@ Experiments were conducted under identical hardware and software environments: f
 </p>
 
 <div align=center>
-  <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/.png">
+  <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/baseline_figure3.png">
 </div>
 <p align=center>
   Figure 7: The visual results of our method compared to the existing 13 segmentation methods on the OIMHS dataset.
 </p>
 
-#### Cross Validation Results
-
-<div align=center>
-  <img src="https://github.com/IMOP-lab/SASAN-Pytorch/blob/main/figures/five-fold-cross.png">
-</div>
-<p align=center>
-  Figure 8: Our method's 5-fold cross-validation results compared to the 13 segmentation methods on the OIMHS dataset.
-</p>
-
-Comparative experiments on the public OIMHS dataset and five-fold cross-validation further demonstrate the efficacy and reliability of our method against previous approaches.
-
 ### Ablation study
 
-#### Key components of SASAN
+#### Key components of TriFTM-Net
 <div align=center>
-  <img src="https://github.com/IMOP-lab/SASAN-Pytorch/blob/main/tables/Ablation1.png">
+  <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/ablation_module.png">
 </div>
 <p align=center>
-  Figure 9: Ablation experiments on key components of SASAN on the CMED dataset.
+  Figure 9: Ablation experiments on key components of TriFTM-Net on the OIMHS dataset.
 </p>
 
-FINE introduces a wide range of low-frequency features, which has a good effect in reducing high-frequency noise and enhancing detail extraction. ASEM has a strong ability to enhance the network for the analysis of features that are difficult to distinguish objects.
+FDB introduces frequency domain information to suppress image noise. SDB incorporates spatiotemporal domain information to focus on multiple scales of the image. HRM exhibits strong generalization capability in focusing on deep feature maps. HFRM shows good results in restoring image details and feature re-encoding.
 
-#### Loss function strategy
+#### Ablation studies of HFRM
 
 <div align=center>
-  <img src="https://github.com/IMOP-lab/SASAN-Pytorch/blob/main/tables/Ablation2.png">
+  <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/ablation_hfrm.png">
 </div>
 <p align=center>
-  Figure 10: Ablation experiments on Loss function strategy on the CMED dataset.
+  Figure 10: Ablation experiments on HFRM on the OIMHS dataset.
 </p>
 
-The self-updating mechanism and BoundaryRea Loss enhance the network's boundary segmentation ability. To a certain extent, it also improves the overall segmentation ability of the network.
+Adding HFRM after each upsampling not only helps to restore image details but also benefits the subsequent segmentation of large-scale information in the image.
 
-### Model Complexity
-
-<div align=center>
-  <img src="https://github.com/IMOP-lab/SASAN-Pytorch/blob/main/figures/Parameters.png">
