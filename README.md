@@ -66,7 +66,7 @@ Experiments were conducted under identical hardware and software environments: f
 </p>
 
 <div align=center>
-  <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/baseline_figure3.png">
+  <img src="https://github.com/IMOP-lab/TriFTM-Net/blob/main/figure/baseline.png">
 </div>
 <p align=center>
   Figure 6: The visual results of our method compared to the existing 13 segmentation methods on the OIMHS dataset.
